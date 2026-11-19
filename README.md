@@ -11,6 +11,8 @@ Send any document (PDF) for digital signature. The signer signs on phone/laptop;
 | SMTP_PASS | 16-letter Google App Password for that account |
 | FROM_NAME | Sender name shown in emails, e.g. "Lavana Lifestyle Solutions" |
 
+| CLOUDCONVERT_API_KEY | (Optional) lets you upload Word files – API key from cloudconvert.com |
+
 Optional: SMTP_HOST (default smtp.gmail.com), SMTP_PORT (default 465), SITE_URL (custom domain).
 
 Local test: `npm install && ADMIN_PASSWORD=test node dev-server.mjs` (emails are only logged).

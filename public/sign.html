@@ -16,13 +16,6 @@ body{padding-bottom:96px}
 .sheet-bg{position:fixed;inset:0;background:rgba(10,20,40,.55);z-index:50;display:flex;align-items:flex-end;justify-content:center}
 .sheet{background:#fff;width:100%;max-width:560px;border-radius:18px 18px 0 0;padding:20px;max-height:94vh;overflow:auto}
 @media(min-width:700px){.sheet-bg{align-items:center}.sheet{border-radius:18px}}
-.tabs{display:flex;background:#eef1f6;border-radius:10px;padding:4px;margin-bottom:12px}
-.tabs button{flex:1;border:0;background:transparent;padding:9px;border-radius:8px;font:inherit;font-weight:700;color:var(--muted);cursor:pointer}
-.tabs button.on{background:#fff;color:var(--ink);box-shadow:0 1px 4px rgba(0,0,0,.08)}
-.pad{position:relative;border:1.5px dashed #b9c3d3;border-radius:12px;background:#fbfcfe;touch-action:none}
-.pad canvas{display:block;width:100%;height:auto;border-radius:12px}
-.pad .hint{position:absolute;left:0;right:0;bottom:30%;text-align:center;color:#b0b8c6;pointer-events:none;font-size:14px}
-.pad .clear{position:absolute;top:8px;right:8px}
 .check{display:flex;gap:10px;align-items:flex-start;font-size:14px;margin:14px 0;line-height:1.4}
 .check input{width:20px;height:20px;flex:none;margin-top:1px}
 .done{text-align:center}
@@ -66,13 +59,7 @@ body{padding-bottom:96px}
       <h2 style="margin:0">Add your signature</h2>
       <button class="btn sm ghost" id="closeSheet">Close</button>
     </div>
-    <div class="tabs"><button class="on" data-t="draw">Draw</button><button data-t="type">Type</button><button data-t="upload">Upload</button></div>
-    <input type="file" id="sigFile" accept="image/*" class="hidden">
-    <div class="pad" id="padWrap">
-      <canvas id="pad" width="600" height="250"></canvas>
-      <div class="hint" id="hint">Draw your signature here</div>
-      <button class="btn sm ghost clear" id="clearPad">Clear</button>
-    </div>
+    <div id="padRoot"></div>
     <div style="margin-top:14px">
       <label for="fullName">Your full name</label>
       <input id="fullName" autocomplete="name">
@@ -100,6 +87,7 @@ body{padding-bottom:96px}
 
 <script type="module">
 import { renderPdf, placeMarker } from "/pdfview.js";
+import { sigPad, PAD_HTML } from "/sigpad.js";
 const $ = (s) => document.querySelector(s);
 const id = new URLSearchParams(location.search).get("id");
 const show = (el) => { ["#loading", "#bad", "#main", "#done"].forEach((s) => $(s).classList.add("hidden")); $(el).classList.remove("hidden"); };
@@ -112,7 +100,7 @@ async function init() {
   if (!r.ok) return bad("Link not valid", "This link may be incorrect. Please contact the sender.");
   info = await r.json();
   $("#dl").href = `/api/sign/${id}/pdf`;
-  if (info.status === "signed") { $("#doneMsg").textContent = `You signed this document on ${info.signedAt}.`; return show("#done"); }
+  if (info.status === "signed") { $("#doneMsg").textContent = info.awaitingCountersign ? `You signed this document on ${info.signedAt}. You will get the final copy by email once ${info.company} countersigns.` : `You signed this document on ${info.signedAt}.`; return show("#done"); }
   if (info.status === "cancelled") return bad("Document withdrawn", "This document is no longer active. Please contact the sender.");
   if (info.status === "declined") return bad("Declined", "You declined to sign this document. Please contact the sender if this was a mistake.");
   $("#co").textContent = info.company;
@@ -127,89 +115,27 @@ async function init() {
 }
 
 // ---- signature pad ----
-const pad = $("#pad"), ctx = pad.getContext("2d");
-let mode = "draw", drawn = false, drawing = false, last;
-const pos = (e) => { const r = pad.getBoundingClientRect(); return { x: (e.clientX - r.left) * pad.width / r.width, y: (e.clientY - r.top) * pad.height / r.height }; };
-const hints = { draw: "Draw your signature here", upload: "Tap here to upload a photo of your signature" };
-function clearPad() {
-  ctx.clearRect(0, 0, pad.width, pad.height); drawn = false;
-  $("#hint").textContent = hints[mode] || ""; $("#hint").style.display = hints[mode] ? "" : "none";
-  $("#sigFile").value = "";
-  if (mode === "type") typeSig();
-}
-pad.addEventListener("click", () => { if (mode === "upload" && !drawn) $("#sigFile").click(); });
-
-// Upload: crop to the ink, remove the paper background, fit into the pad.
-$("#sigFile").onchange = async (e) => {
-  const f = e.target.files[0]; if (!f) return;
-  const img = new Image();
-  img.src = URL.createObjectURL(f);
-  try { await img.decode(); } catch { $("#sheetErr").textContent = "Could not read that image"; return; }
-  const s = Math.min(1, 1400 / Math.max(img.width, img.height));
-  const w = Math.round(img.width * s), h = Math.round(img.height * s);
-  const oc = document.createElement("canvas"); oc.width = w; oc.height = h;
-  const o = oc.getContext("2d"); o.fillStyle = "#fff"; o.fillRect(0, 0, w, h); o.drawImage(img, 0, 0, w, h);
-  const d = o.getImageData(0, 0, w, h), px = d.data;
-  let sum = 0; for (let i = 0; i < px.length; i += 4) sum += (px[i] * 0.3 + px[i + 1] * 0.59 + px[i + 2] * 0.11);
-  const thr = Math.min(190, sum / (px.length / 4) - 45);
-  let x0 = w, y0 = h, x1 = 0, y1 = 0;
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-    const i = (y * w + x) * 4, lum = px[i] * 0.3 + px[i + 1] * 0.59 + px[i + 2] * 0.11;
-    if (lum < thr) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; px[i + 3] = 255; }
-    else px[i + 3] = 0;
-  }
-  if (x1 <= x0 || y1 <= y0) { $("#sheetErr").textContent = "Couldn't find a signature in that image – try a clearer photo on white paper"; return; }
-  o.putImageData(d, 0, 0);
-  const cw = x1 - x0 + 1, ch = y1 - y0 + 1, m = 16;
-  const k = Math.min((pad.width - 2 * m) / cw, (pad.height - 2 * m) / ch);
-  ctx.clearRect(0, 0, pad.width, pad.height);
-  ctx.drawImage(oc, x0, y0, cw, ch, (pad.width - cw * k) / 2, (pad.height - ch * k) / 2, cw * k, ch * k);
-  $("#hint").style.display = "none"; $("#sheetErr").textContent = ""; drawn = true;
-};
-pad.addEventListener("pointerdown", (e) => { if (mode !== "draw") return; drawing = true; last = pos(e); pad.setPointerCapture(e.pointerId); $("#hint").style.display = "none"; });
-pad.addEventListener("pointermove", (e) => {
-  if (!drawing) return; const p = pos(e);
-  ctx.strokeStyle = "#0b2a5b"; ctx.lineWidth = 3.2; ctx.lineCap = "round"; ctx.lineJoin = "round";
-  ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; drawn = true;
-});
-["pointerup", "pointercancel", "pointerleave"].forEach((ev) => pad.addEventListener(ev, () => (drawing = false)));
-$("#clearPad").onclick = clearPad;
-
-async function typeSig() {
-  await document.fonts.load('600 80px "SignFont"');
-  ctx.clearRect(0, 0, pad.width, pad.height);
-  const name = $("#fullName").value.trim();
-  if (!name) { drawn = false; return; }
-  let size = 86; ctx.font = `600 ${size}px "SignFont"`;
-  while (ctx.measureText(name).width > pad.width - 40 && size > 30) { size -= 4; ctx.font = `600 ${size}px "SignFont"`; }
-  ctx.fillStyle = "#0b2a5b"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  ctx.fillText(name, pad.width / 2, pad.height / 2 + 6);
-  drawn = true;
-}
-$("#fullName").oninput = () => mode === "type" && typeSig();
-document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
-  document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x === b));
-  mode = b.dataset.t; clearPad();
-});
+$("#padRoot").innerHTML = PAD_HTML;
+const sp = sigPad({ root: $("#padRoot"), nameInput: $("#fullName"), onError: (t) => ($("#sheetErr").textContent = t) });
 
 $("#signBtn").onclick = () => { $("#sheetBg").classList.remove("hidden"); $("#sheetErr").textContent = ""; };
 $("#closeSheet").onclick = () => $("#sheetBg").classList.add("hidden");
 
 $("#confirm").onclick = async () => {
   const err = (t) => ($("#sheetErr").textContent = t);
-  if (!drawn) return err({ draw: "Please draw your signature", type: "Please type your name", upload: "Please upload your signature" }[mode]);
+  if (!sp.has()) return err(sp.missingMsg());
   if ($("#fullName").value.trim().length < 2) return err("Please enter your full name");
   if (!$("#agree").checked) return err("Please tick the box to confirm");
   const b = $("#confirm"); b.disabled = true; b.textContent = "Signing…";
   try {
     const r = await fetch(`/api/sign/${id}`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ signature: pad.toDataURL("image/png"), typedName: $("#fullName").value.trim(), agree: true }),
+      body: JSON.stringify({ signature: sp.dataURL(), typedName: $("#fullName").value.trim(), agree: true }),
     });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || "Could not sign");
     $("#sheetBg").classList.add("hidden");
-    $("#doneMsg").textContent = `Signed on ${j.signedAt}. A copy has been emailed to you.`;
+    $("#doneMsg").textContent = j.awaitingCountersign ? `Signed on ${j.signedAt}. You will get the final copy by email once ${info.company} countersigns.` : `Signed on ${j.signedAt}. A copy has been emailed to you.`;
     show("#done"); window.scrollTo(0, 0);
   } catch (e) { err(e.message); b.disabled = false; b.textContent = "Sign Document"; }
 };

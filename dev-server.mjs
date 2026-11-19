@@ -23,6 +23,18 @@ const types = { ".html": "text/html", ".css": "text/css", ".js": "text/javascrip
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost:8888");
+  // Dev only: convert Word locally with LibreOffice instead of CloudConvert
+  if (process.env.DEV_SOFFICE && url.pathname === "/api/convert" && req.method === "POST") {
+    const chunks = []; for await (const c of req) chunks.push(c);
+    const fd = await new Request(url, { method: "POST", headers: req.headers, body: Buffer.concat(chunks), duplex: "half" }).formData();
+    const file = fd.get("file");
+    const { execFileSync } = await import("node:child_process");
+    const dir = await fs.mkdtemp("/tmp/conv-");
+    const inPath = path.join(dir, "in.docx");
+    await fs.writeFile(inPath, Buffer.from(await file.arrayBuffer()));
+    execFileSync("soffice", ["--headless", "--convert-to", "pdf", "--outdir", dir, inPath]);
+    res.writeHead(200, { "content-type": "application/pdf" }); res.end(await fs.readFile(path.join(dir, "in.pdf"))); return;
+  }
   if (url.pathname.startsWith("/api")) {
     const chunks = []; for await (const c of req) chunks.push(c);
     const body = ["GET", "HEAD"].includes(req.method) ? undefined : Buffer.concat(chunks);

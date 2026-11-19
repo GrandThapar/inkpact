@@ -30,9 +30,9 @@ export async function renderPdf(data, container) {
 // Signature box size as fraction of page width (matches server: min(170pt, 32% width) on A4 ≈ 0.29)
 export const BOX_W = 0.29, BOX_H_RATIO = 0.42;
 
-export function placeMarker(wrap, fx, fy, text = "Sign here", cls = "") {
-  let m = wrap.querySelector(".marker");
-  if (!m) { m = document.createElement("div"); wrap.appendChild(m); }
+export function placeMarker(wrap, fx, fy, text = "Sign here", cls = "", key = "signer") {
+  let m = wrap.querySelector(`.marker[data-key="${key}"]`);
+  if (!m) { m = document.createElement("div"); m.dataset.key = key; wrap.appendChild(m); }
   m.className = "marker " + cls;
   m.textContent = text;
   const ratio = Number(wrap.dataset.ratio) || 1.414;

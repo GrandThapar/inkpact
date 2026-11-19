@@ -26,12 +26,33 @@
     <div class="brand">Ink<span>pact</span></div>
     <div style="display:flex;gap:8px">
       <button class="btn sm" id="newBtn" style="background:#fff;color:var(--ink)">+ New document</button>
+      <button class="btn sm lite" id="sigsBtn">My signatures</button>
       <button class="btn sm lite" id="logout">Log out</button>
     </div>
   </div>
 
   <div class="wrap">
-    <!-- New offer -->
+    <!-- My signatures -->
+    <div id="sigsPanel" class="card hidden" style="margin-bottom:20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <h2 style="margin:0">My signatures</h2>
+        <button class="btn sm ghost" id="sigsClose">Close</button>
+      </div>
+      <p class="muted small" style="margin-top:0">Save the signatures of people who sign for your companies. You can then add them to any document.</p>
+      <div id="sigList"></div>
+      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:14px">
+        <h2 style="font-size:15px">Add a signature</h2>
+        <div class="grid">
+          <div><label>Name *</label><input id="msName" placeholder="e.g. Aditi Thapar"></div>
+          <div><label>Designation</label><input id="msDesig" placeholder="e.g. Authorised Signatory"></div>
+          <div class="full" style="max-width:520px" id="msPad"></div>
+        </div>
+        <button class="btn" id="msSave" style="margin-top:12px">Save signature</button>
+        <div class="err" id="msErr"></div>
+      </div>
+    </div>
+
+    <!-- New document -->
     <div id="newPanel" class="card hidden" style="margin-bottom:20px">
       <h2>Send a document for signature</h2>
       <form id="offerForm">
@@ -41,7 +62,20 @@
           <div><label>Signer name *</label><input name="candidateName" required></div>
           <div><label>Signer email *</label><input name="candidateEmail" type="email" required></div>
           <div class="full"><label>Note to signer (optional)</label><textarea name="message" placeholder="Shown in the email above the Sign button"></textarea></div>
-          <div class="full"><label>Document (PDF) *</label><input name="pdf" id="pdfInput" type="file" accept="application/pdf" required></div>
+          <div class="full"><label>Document (PDF or Word) *</label><input id="pdfInput" type="file" accept=".pdf,.docx,.doc,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
+            <div class="small muted" id="convInfo" style="margin-top:6px"></div></div>
+          <div class="full">
+            <label>Your signature on this document</label>
+            <div class="choice" id="senderMode">
+              <label><input type="radio" name="senderMode" value="none" checked> <span><b>No</b><br><span class="small muted">Only the signer signs</span></span></label>
+              <label><input type="radio" name="senderMode" value="before"> <span><b>Sign now</b><br><span class="small muted">My signature goes on before sending</span></span></label>
+              <label><input type="radio" name="senderMode" value="after"> <span><b>Sign after</b><br><span class="small muted">I countersign once they sign</span></span></label>
+            </div>
+            <div id="senderPick" class="hidden" style="margin-top:10px">
+              <select id="senderSigId"></select>
+              <div class="small muted" style="margin-top:6px" id="noSigs"></div>
+            </div>
+          </div>
         </div>
         <datalist id="companies">
           <option>Lavana Lifestyle Solutions</option>
@@ -59,7 +93,12 @@
         </datalist>
 
         <div id="placeWrap" class="hidden" style="margin-top:18px">
-          <label>Tap on the document where the signer should sign <span class="muted" id="placeInfo">(default: bottom-right of last page)</span></label>
+          <label>Tap on the document to place the signature <span class="muted" id="placeInfo">(default: bottom of last page)</span></label>
+          <div class="seg hidden" id="placeWho">
+            <span class="small muted">Placing:</span>
+            <button type="button" class="on" data-who="signer">Signer's signature</button>
+            <button type="button" data-who="me">My signature</button>
+          </div>
           <div class="pages" id="adminPages"></div>
         </div>
 
@@ -89,11 +128,13 @@
 
 <script type="module">
 import { renderPdf, placeMarker, BOX_W } from "/pdfview.js";
+import { sigPad, PAD_HTML } from "/sigpad.js";
 
 const $ = (s) => document.querySelector(s);
 let KEY = localStorage.getItem("os_key") || "";
 let offers = [];
-let sig = null; // {page, x, y}
+let sig = null, mySpot = null; // {page, x, y}
+let mySigs = [], currentPdf = null, pagesCache = [], placing = "signer";
 
 const toast = (t) => { const el = $("#toast"); el.textContent = t; el.classList.add("show"); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("show"), 2600); };
 const api = async (path, opts = {}) => {
@@ -106,7 +147,7 @@ const fmt = (iso) => iso ? new Date(iso).toLocaleString("en-IN", { day: "2-digit
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 function showLogin() { $("#app").classList.add("hidden"); $("#login").classList.remove("hidden"); }
-function showApp() { $("#login").classList.add("hidden"); $("#app").classList.remove("hidden"); load(); }
+function showApp() { $("#login").classList.add("hidden"); $("#app").classList.remove("hidden"); load(); loadSigs(); }
 
 $("#loginForm").onsubmit = async (e) => {
   e.preventDefault(); $("#loginErr").textContent = "";
@@ -124,19 +165,20 @@ function render() {
   const q = $("#search").value.toLowerCase();
   const list = offers.filter((o) => !q || [o.candidateName, o.role, o.company, o.candidateEmail].join(" ").toLowerCase().includes(q));
   $("#sTotal").textContent = offers.length;
-  $("#sWait").textContent = offers.filter((o) => ["sent", "viewed"].includes(o.status)).length;
+  $("#sWait").textContent = offers.filter((o) => ["sent", "viewed"].includes(o.status) || o.awaitingCountersign).length;
   $("#sSigned").textContent = offers.filter((o) => o.status === "signed").length;
   $("#sDecl").textContent = offers.filter((o) => o.status === "declined").length;
   if (!list.length) { $("#list").innerHTML = `<p class="muted">${offers.length ? "No matches." : "No documents yet. Tap “+ New document” to send your first one."}</p>`; return; }
   $("#list").innerHTML = list.map((o) => {
-    const when = o.status === "signed" ? `Signed ${fmt(o.signedAt)}` : o.status === "declined" ? `Declined ${fmt(o.declinedAt)}${o.declineReason ? " – “" + esc(o.declineReason) + "”" : ""}` : o.status === "viewed" ? `Viewed ${fmt(o.viewedAt)}` : `Sent ${fmt(o.createdAt)}`;
+    const when = o.awaitingCountersign ? `Signed ${fmt(o.signedAt)} · waiting for your countersignature` : o.status === "signed" ? `Signed ${fmt(o.signedAt)}${o.countersignedAt ? " · countersigned " + fmt(o.countersignedAt) : ""}` : o.status === "declined" ? `Declined ${fmt(o.declinedAt)}${o.declineReason ? " – “" + esc(o.declineReason) + "”" : ""}` : o.status === "viewed" ? `Viewed ${fmt(o.viewedAt)}` : `Sent ${fmt(o.createdAt)}`;
     const open = ["sent", "viewed"].includes(o.status);
     return `<div class="offer">
-      <div class="who"><b>${esc(o.candidateName)}</b> <span class="pill ${o.status}">${o.status}</span><br>
+      <div class="who"><b>${esc(o.candidateName)}</b> ${o.awaitingCountersign ? '<span class="pill viewed">your turn</span>' : `<span class="pill ${o.status}">${o.status}</span>`}${o.senderSig ? ` <span class="small muted">· ${o.senderSig.mode === "before" ? "you signed first" : "you countersign"}</span>` : ""}<br>
         <span class="small">${esc(o.role)} · ${esc(o.company)}</span><br>
         <span class="small muted">${esc(o.candidateEmail)} · ${when}</span></div>
       <div class="acts">
-        <button class="btn sm ${o.status === "signed" ? "" : "ghost"}" data-a="pdf" data-id="${o.id}">${o.status === "signed" ? "Signed PDF" : "View PDF"}</button>
+        ${o.awaitingCountersign ? `<button class="btn sm" style="background:var(--ok)" data-a="counter" data-id="${o.id}">Countersign</button>` : ""}
+        <button class="btn sm ${o.status === "signed" && !o.awaitingCountersign ? "" : "ghost"}" data-a="pdf" data-id="${o.id}">${o.status === "signed" ? "Signed PDF" : "View PDF"}</button>
         ${open ? `<button class="btn sm ghost" data-a="copy" data-id="${o.id}">Copy link</button>
         <button class="btn sm ghost" data-a="resend" data-id="${o.id}">Remind</button>
         <button class="btn sm danger" data-a="cancel" data-id="${o.id}">Withdraw</button>` : ""}
@@ -157,6 +199,9 @@ $("#list").onclick = async (e) => {
       link.href = url; link.download = `${o.status === "signed" ? "Signed - " : ""}${o.role} - ${o.candidateName}.pdf`;
       link.click(); setTimeout(() => URL.revokeObjectURL(url), 5000);
     }
+    if (a === "counter" && confirm(`Add ${o.senderSig.name}'s signature to “${o.role}” and send the final copy to ${o.candidateName}?`)) {
+      b.disabled = true; await api(`/offers/${id}/countersign`, { method: "POST" }); toast("Countersigned – final copy emailed to both"); load();
+    }
     if (a === "copy") { await navigator.clipboard.writeText(`${location.origin}/sign.html?id=${id}`); toast("Signing link copied – you can WhatsApp it too"); }
     if (a === "resend") { b.disabled = true; await api(`/offers/${id}/resend`, { method: "POST" }); toast("Reminder email sent"); load(); }
     if (a === "cancel" && confirm(`Withdraw “${o.role}” sent to ${o.candidateName}? The link will stop working.`)) { await api(`/offers/${id}/cancel`, { method: "POST" }); toast("Withdrawn"); load(); }
@@ -164,20 +209,102 @@ $("#list").onclick = async (e) => {
   } catch (err) { toast(err.message); b.disabled = false; }
 };
 
-// ---- New offer ----
+// ---- My signatures ----
+$("#msPad").innerHTML = PAD_HTML;
+const msPad = sigPad({ root: $("#msPad"), nameInput: $("#msName"), onError: (t) => ($("#msErr").textContent = t) });
+async function loadSigs() {
+  try { mySigs = await (await api("/mysigs")).json(); } catch { mySigs = []; }
+  $("#sigList").innerHTML = mySigs.length ? mySigs.map((g) => `<div class="offer"><div style="display:flex;gap:14px;align-items:center">
+      <img src="${g.image}" alt="" style="height:46px;background:#fbfcfe;border:1px solid var(--line);border-radius:8px;padding:4px">
+      <div><b>${esc(g.name)}</b><br><span class="small muted">${esc(g.designation || "")}</span></div></div>
+      <button class="btn sm danger" data-del="${g.id}">Delete</button></div>`).join("") : '<p class="muted small">No saved signatures yet.</p>';
+  $("#senderSigId").innerHTML = mySigs.map((g) => `<option value="${g.id}">${esc(g.name)}${g.designation ? " – " + esc(g.designation) : ""}</option>`).join("");
+  $("#noSigs").innerHTML = mySigs.length ? "" : 'No saved signature yet – tap <b>My signatures</b> at the top to add one.';
+}
+$("#sigsBtn").onclick = () => { $("#sigsPanel").classList.remove("hidden"); $("#sigsPanel").scrollIntoView({ behavior: "smooth" }); };
+$("#sigsClose").onclick = () => $("#sigsPanel").classList.add("hidden");
+$("#sigList").onclick = async (e) => {
+  const id = e.target.dataset?.del; if (!id || !confirm("Delete this saved signature?")) return;
+  await api(`/mysigs/${id}`, { method: "DELETE" }); toast("Deleted"); loadSigs();
+};
+$("#msSave").onclick = async () => {
+  $("#msErr").textContent = "";
+  if ($("#msName").value.trim().length < 2) return ($("#msErr").textContent = "Please enter the name");
+  if (!msPad.has()) return ($("#msErr").textContent = msPad.missingMsg());
+  try {
+    await api("/mysigs", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: $("#msName").value.trim(), designation: $("#msDesig").value.trim(), image: msPad.dataURL() }) });
+    toast("Signature saved"); $("#msName").value = ""; $("#msDesig").value = ""; msPad.reset(); loadSigs();
+  } catch (err) { $("#msErr").textContent = err.message; }
+};
+
+// ---- New document ----
+const senderMode = () => document.querySelector("input[name=senderMode]:checked").value;
 $("#newBtn").onclick = () => { $("#newPanel").classList.remove("hidden"); $("#newPanel").scrollIntoView({ behavior: "smooth" }); };
-$("#cancelNew").onclick = () => { $("#offerForm").reset(); $("#placeWrap").classList.add("hidden"); sig = null; $("#newPanel").classList.add("hidden"); };
+$("#cancelNew").onclick = () => {
+  $("#offerForm").reset(); $("#placeWrap").classList.add("hidden"); $("#convInfo").textContent = "";
+  sig = mySpot = currentPdf = null; pagesCache = []; updateSenderUI(); $("#newPanel").classList.add("hidden");
+};
+
+function setPlacing(who) {
+  placing = who;
+  document.querySelectorAll("#placeWho button").forEach((b) => b.classList.toggle("on", b.dataset.who === who));
+}
+document.querySelectorAll("#placeWho button").forEach((b) => (b.onclick = () => setPlacing(b.dataset.who)));
+
+function drawMarkers() {
+  pagesCache.forEach((p) => p.querySelectorAll(".marker").forEach((m) => m.remove()));
+  if (sig && pagesCache[sig.page]) placeMarker(pagesCache[sig.page], sig.x, sig.y, "Signer signs here", "", "signer");
+  if (senderMode() !== "none" && mySpot && pagesCache[mySpot.page]) placeMarker(pagesCache[mySpot.page], mySpot.x, mySpot.y, "My signature", "me", "me");
+}
+function updateSenderUI() {
+  const on = senderMode() !== "none";
+  $("#senderPick").classList.toggle("hidden", !on);
+  $("#placeWho").classList.toggle("hidden", !on);
+  if (!on) setPlacing("signer");
+  else if (pagesCache.length && !mySpot) mySpot = { page: pagesCache.length - 1, x: 0.08, y: 0.8 };
+  drawMarkers();
+}
+document.querySelectorAll("input[name=senderMode]").forEach((r) => (r.onchange = updateSenderUI));
+
+async function wordToPdf(file) {
+  const fd = new FormData(); fd.set("file", file);
+  const r = await api("/convert", { method: "POST", body: fd });
+  if ((r.headers.get("content-type") || "").includes("pdf")) return await r.arrayBuffer();
+  const { jobId } = await r.json();
+  for (let i = 0; i < 60; i++) {
+    await new Promise((res) => setTimeout(res, 2000));
+    const p = await api(`/convert/${jobId}`);
+    if (p.status === 200 && (p.headers.get("content-type") || "").includes("pdf")) return await p.arrayBuffer();
+  }
+  throw new Error("Conversion is taking too long – please try again");
+}
 
 $("#pdfInput").onchange = async (e) => {
   const f = e.target.files[0]; if (!f) return;
+  $("#formErr").textContent = ""; $("#convInfo").textContent = "";
+  currentPdf = null; pagesCache = [];
   $("#placeWrap").classList.remove("hidden");
   const pagesEl = $("#adminPages");
-  pagesEl.innerHTML = '<p class="muted">Loading preview…</p>';
   try {
-    const pages = await renderPdf(new Uint8Array(await f.arrayBuffer()), pagesEl);
+    let bytes;
+    if (/\.docx?$/i.test(f.name)) {
+      pagesEl.innerHTML = '<p class="muted">Converting Word file to PDF…</p>';
+      bytes = await wordToPdf(f);
+      const pdfName = f.name.replace(/\.docx?$/i, ".pdf");
+      currentPdf = new File([bytes], pdfName, { type: "application/pdf" });
+      $("#convInfo").textContent = "Converted from Word – please check the preview below looks right.";
+    } else {
+      bytes = await f.arrayBuffer();
+      currentPdf = f;
+    }
+    pagesEl.innerHTML = '<p class="muted">Loading preview…</p>';
+    const pages = await renderPdf(new Uint8Array(bytes.slice(0)), pagesEl);
+    pagesCache = pages;
     const last = pages.length - 1;
     sig = { page: last, x: 0.6, y: 0.8 };
-    placeMarker(pages[last], sig.x, sig.y, "Signer signs here");
+    mySpot = senderMode() !== "none" ? { page: last, x: 0.08, y: 0.8 } : null;
+    drawMarkers();
     pages.forEach((wrap, i) => {
       wrap.classList.add("pick");
       wrap.onclick = (ev) => {
@@ -185,20 +312,29 @@ $("#pdfInput").onchange = async (e) => {
         let x = (ev.clientX - r.left) / r.width - BOX_W / 2;
         let y = (ev.clientY - r.top) / r.height - 0.03;
         x = Math.min(Math.max(x, 0.02), 0.98 - BOX_W); y = Math.min(Math.max(y, 0.02), 0.9);
-        pages.forEach((p) => p.querySelector(".marker")?.remove());
-        sig = { page: i, x, y };
-        placeMarker(wrap, x, y, "Signer signs here");
-        $("#placeInfo").textContent = `(page ${i + 1} selected – tap elsewhere to move)`;
+        if (placing === "me") mySpot = { page: i, x, y }; else sig = { page: i, x, y };
+        drawMarkers();
+        $("#placeInfo").textContent = `(${placing === "me" ? "your" : "signer's"} signature on page ${i + 1} – tap again to move)`;
       };
     });
     pages[last].scrollIntoView({ block: "nearest" });
-  } catch { pagesEl.innerHTML = '<p class="err">Could not read this PDF.</p>'; }
+  } catch (err) {
+    currentPdf = null;
+    pagesEl.innerHTML = `<p class="err">${esc(err.message || "Could not read this file.")}</p>`;
+  }
 };
 
 $("#offerForm").onsubmit = async (e) => {
   e.preventDefault(); $("#formErr").textContent = "";
+  if (!currentPdf) return ($("#formErr").textContent = "Please choose the document (PDF or Word)");
   const fd = new FormData(e.target);
+  fd.set("pdf", currentPdf);
   if (sig) { fd.set("sigPage", sig.page); fd.set("sigX", sig.x.toFixed(4)); fd.set("sigY", sig.y.toFixed(4)); }
+  if (senderMode() !== "none") {
+    if (!$("#senderSigId").value) return ($("#formErr").textContent = "Please add your signature in “My signatures” first");
+    fd.set("senderSigId", $("#senderSigId").value);
+    if (mySpot) { fd.set("sPage", mySpot.page); fd.set("sX", mySpot.x.toFixed(4)); fd.set("sY", mySpot.y.toFixed(4)); }
+  }
   const btn = $("#sendBtn"); btn.disabled = true; btn.textContent = "Sending…";
   try {
     await api("/offers", { method: "POST", body: fd });
