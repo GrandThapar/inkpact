@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Review &amp; sign – Inkpact</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+@font-face{font-family:"SignFont";src:url("/vendor/sign-font.woff2") format("woff2");font-weight:600}
+body{padding-bottom:96px}
+.hero{background:var(--ink);color:#fff;padding:22px 20px}
+.hero .co{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:#8fb8ff;font-weight:700}
+.hero h1{font-size:21px;margin:6px 0 2px}
+.bar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid var(--line);padding:12px 16px;display:flex;gap:10px;align-items:center;justify-content:center;box-shadow:0 -4px 18px rgba(20,33,61,.08);z-index:20}
+.bar .btn{flex:1;max-width:420px;padding:14px}
+.sheet-bg{position:fixed;inset:0;background:rgba(10,20,40,.55);z-index:50;display:flex;align-items:flex-end;justify-content:center}
+.sheet{background:#fff;width:100%;max-width:560px;border-radius:18px 18px 0 0;padding:20px;max-height:94vh;overflow:auto}
+@media(min-width:700px){.sheet-bg{align-items:center}.sheet{border-radius:18px}}
+.tabs{display:flex;background:#eef1f6;border-radius:10px;padding:4px;margin-bottom:12px}
+.tabs button{flex:1;border:0;background:transparent;padding:9px;border-radius:8px;font:inherit;font-weight:700;color:var(--muted);cursor:pointer}
+.tabs button.on{background:#fff;color:var(--ink);box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.pad{position:relative;border:1.5px dashed #b9c3d3;border-radius:12px;background:#fbfcfe;touch-action:none}
+.pad canvas{display:block;width:100%;height:auto;border-radius:12px}
+.pad .hint{position:absolute;left:0;right:0;bottom:30%;text-align:center;color:#b0b8c6;pointer-events:none;font-size:14px}
+.pad .clear{position:absolute;top:8px;right:8px}
+.check{display:flex;gap:10px;align-items:flex-start;font-size:14px;margin:14px 0;line-height:1.4}
+.check input{width:20px;height:20px;flex:none;margin-top:1px}
+.done{text-align:center}
+.tick{width:68px;height:68px;border-radius:50%;background:#e3f6e9;color:var(--ok);font-size:38px;display:flex;align-items:center;justify-content:center;margin:0 auto 12px}
+</style>
+</head>
+<body>
+
+<div id="loading" class="center"><p class="muted">Loading your document…</p></div>
+<div id="bad" class="center hidden"><div class="card" style="max-width:420px;text-align:center"><h2 id="badTitle">Link not valid</h2><p class="muted" id="badMsg">Please check the link in your email.</p></div></div>
+
+<div id="main" class="hidden">
+  <div class="hero">
+    <div class="co" id="co"></div>
+    <h1 id="title"></h1>
+    <div class="small" style="opacity:.8" id="sub">Please read the document below, then tap “Sign”.</div>
+  </div>
+  <div class="wrap" style="padding:14px">
+    <div class="pages" id="pages" style="max-height:none"></div>
+  </div>
+  <div class="bar" id="bar">
+    <button class="btn ghost" id="declineBtn" style="flex:0 0 auto">Decline</button>
+    <button class="btn" id="signBtn">Sign</button>
+  </div>
+</div>
+
+<!-- Signed / declined -->
+<div id="done" class="center hidden">
+  <div class="card done" style="max-width:440px">
+    <div class="tick">✓</div>
+    <h2 style="margin-bottom:6px">Document signed</h2>
+    <p class="muted" id="doneMsg">A copy has been emailed to you.</p>
+    <a class="btn" id="dl" href="#" target="_blank">Download signed copy</a>
+  </div>
+</div>
+
+<!-- Sign sheet -->
+<div class="sheet-bg hidden" id="sheetBg">
+  <div class="sheet">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2 style="margin:0">Add your signature</h2>
+      <button class="btn sm ghost" id="closeSheet">Close</button>
+    </div>
+    <div class="tabs"><button class="on" data-t="draw">Draw</button><button data-t="type">Type</button><button data-t="upload">Upload</button></div>
+    <input type="file" id="sigFile" accept="image/*" class="hidden">
+    <div class="pad" id="padWrap">
+      <canvas id="pad" width="600" height="250"></canvas>
+      <div class="hint" id="hint">Draw your signature here</div>
+      <button class="btn sm ghost clear" id="clearPad">Clear</button>
+    </div>
+    <div style="margin-top:14px">
+      <label for="fullName">Your full name</label>
+      <input id="fullName" autocomplete="name">
+    </div>
+    <label class="check"><input type="checkbox" id="agree"><span>I have read this document and I agree to its contents and terms. I agree that this electronic signature is as valid as my handwritten signature.</span></label>
+    <button class="btn" style="width:100%;padding:14px" id="confirm">Sign Document</button>
+    <div class="err" id="sheetErr"></div>
+  </div>
+</div>
+
+<!-- Decline sheet -->
+<div class="sheet-bg hidden" id="decBg">
+  <div class="sheet">
+    <h2>Decline to sign?</h2>
+    <label for="reason">Reason (optional)</label>
+    <textarea id="reason" placeholder="Let us know why, if you like"></textarea>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn ghost" id="decCancel" style="flex:1">Go back</button>
+      <button class="btn" id="decConfirm" style="flex:1;background:var(--bad)">Decline</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module">
+import { renderPdf, placeMarker } from "/pdfview.js";
+const $ = (s) => document.querySelector(s);
+const id = new URLSearchParams(location.search).get("id");
+const show = (el) => { ["#loading", "#bad", "#main", "#done"].forEach((s) => $(s).classList.add("hidden")); $(el).classList.remove("hidden"); };
+const bad = (t, m) => { $("#badTitle").textContent = t; $("#badMsg").textContent = m; show("#bad"); };
+let info;
+
+async function init() {
+  if (!id) return bad("Link not valid", "Please open the link from your email.");
+  const r = await fetch(`/api/sign/${id}`);
+  if (!r.ok) return bad("Link not valid", "This link may be incorrect. Please contact the sender.");
+  info = await r.json();
+  $("#dl").href = `/api/sign/${id}/pdf`;
+  if (info.status === "signed") { $("#doneMsg").textContent = `You signed this document on ${info.signedAt}.`; return show("#done"); }
+  if (info.status === "cancelled") return bad("Document withdrawn", "This document is no longer active. Please contact the sender.");
+  if (info.status === "declined") return bad("Declined", "You declined to sign this document. Please contact the sender if this was a mistake.");
+  $("#co").textContent = info.company;
+  $("#title").textContent = info.role;
+  $("#sub").textContent = `For ${info.candidateName} · Please read the document below, then tap “Sign”.`;
+  $("#fullName").value = info.candidateName;
+  show("#main");
+  const data = new Uint8Array(await (await fetch(`/api/sign/${id}/pdf`)).arrayBuffer());
+  const pages = await renderPdf(data, $("#pages"));
+  const p = pages[Math.min(info.sigPage ?? pages.length - 1, pages.length - 1)];
+  if (p) placeMarker(p, info.sigX ?? 0.6, info.sigY ?? 0.8, "✍ Sign here", "pulse");
+}
+
+// ---- signature pad ----
+const pad = $("#pad"), ctx = pad.getContext("2d");
+let mode = "draw", drawn = false, drawing = false, last;
+const pos = (e) => { const r = pad.getBoundingClientRect(); return { x: (e.clientX - r.left) * pad.width / r.width, y: (e.clientY - r.top) * pad.height / r.height }; };
+const hints = { draw: "Draw your signature here", upload: "Tap here to upload a photo of your signature" };
+function clearPad() {
+  ctx.clearRect(0, 0, pad.width, pad.height); drawn = false;
+  $("#hint").textContent = hints[mode] || ""; $("#hint").style.display = hints[mode] ? "" : "none";
+  $("#sigFile").value = "";
+  if (mode === "type") typeSig();
+}
+pad.addEventListener("click", () => { if (mode === "upload" && !drawn) $("#sigFile").click(); });
+
+// Upload: crop to the ink, remove the paper background, fit into the pad.
+$("#sigFile").onchange = async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  const img = new Image();
+  img.src = URL.createObjectURL(f);
+  try { await img.decode(); } catch { $("#sheetErr").textContent = "Could not read that image"; return; }
+  const s = Math.min(1, 1400 / Math.max(img.width, img.height));
+  const w = Math.round(img.width * s), h = Math.round(img.height * s);
+  const oc = document.createElement("canvas"); oc.width = w; oc.height = h;
+  const o = oc.getContext("2d"); o.fillStyle = "#fff"; o.fillRect(0, 0, w, h); o.drawImage(img, 0, 0, w, h);
+  const d = o.getImageData(0, 0, w, h), px = d.data;
+  let sum = 0; for (let i = 0; i < px.length; i += 4) sum += (px[i] * 0.3 + px[i + 1] * 0.59 + px[i + 2] * 0.11);
+  const thr = Math.min(190, sum / (px.length / 4) - 45);
+  let x0 = w, y0 = h, x1 = 0, y1 = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y * w + x) * 4, lum = px[i] * 0.3 + px[i + 1] * 0.59 + px[i + 2] * 0.11;
+    if (lum < thr) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; px[i + 3] = 255; }
+    else px[i + 3] = 0;
+  }
+  if (x1 <= x0 || y1 <= y0) { $("#sheetErr").textContent = "Couldn't find a signature in that image – try a clearer photo on white paper"; return; }
+  o.putImageData(d, 0, 0);
+  const cw = x1 - x0 + 1, ch = y1 - y0 + 1, m = 16;
+  const k = Math.min((pad.width - 2 * m) / cw, (pad.height - 2 * m) / ch);
+  ctx.clearRect(0, 0, pad.width, pad.height);
+  ctx.drawImage(oc, x0, y0, cw, ch, (pad.width - cw * k) / 2, (pad.height - ch * k) / 2, cw * k, ch * k);
+  $("#hint").style.display = "none"; $("#sheetErr").textContent = ""; drawn = true;
+};
+pad.addEventListener("pointerdown", (e) => { if (mode !== "draw") return; drawing = true; last = pos(e); pad.setPointerCapture(e.pointerId); $("#hint").style.display = "none"; });
+pad.addEventListener("pointermove", (e) => {
+  if (!drawing) return; const p = pos(e);
+  ctx.strokeStyle = "#0b2a5b"; ctx.lineWidth = 3.2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; drawn = true;
+});
+["pointerup", "pointercancel", "pointerleave"].forEach((ev) => pad.addEventListener(ev, () => (drawing = false)));
+$("#clearPad").onclick = clearPad;
+
+async function typeSig() {
+  await document.fonts.load('600 80px "SignFont"');
+  ctx.clearRect(0, 0, pad.width, pad.height);
+  const name = $("#fullName").value.trim();
+  if (!name) { drawn = false; return; }
+  let size = 86; ctx.font = `600 ${size}px "SignFont"`;
+  while (ctx.measureText(name).width > pad.width - 40 && size > 30) { size -= 4; ctx.font = `600 ${size}px "SignFont"`; }
+  ctx.fillStyle = "#0b2a5b"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(name, pad.width / 2, pad.height / 2 + 6);
+  drawn = true;
+}
+$("#fullName").oninput = () => mode === "type" && typeSig();
+document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => {
+  document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x === b));
+  mode = b.dataset.t; clearPad();
+});
+
+$("#signBtn").onclick = () => { $("#sheetBg").classList.remove("hidden"); $("#sheetErr").textContent = ""; };
+$("#closeSheet").onclick = () => $("#sheetBg").classList.add("hidden");
+
+$("#confirm").onclick = async () => {
+  const err = (t) => ($("#sheetErr").textContent = t);
+  if (!drawn) return err({ draw: "Please draw your signature", type: "Please type your name", upload: "Please upload your signature" }[mode]);
+  if ($("#fullName").value.trim().length < 2) return err("Please enter your full name");
+  if (!$("#agree").checked) return err("Please tick the box to confirm");
+  const b = $("#confirm"); b.disabled = true; b.textContent = "Signing…";
+  try {
+    const r = await fetch(`/api/sign/${id}`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ signature: pad.toDataURL("image/png"), typedName: $("#fullName").value.trim(), agree: true }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "Could not sign");
+    $("#sheetBg").classList.add("hidden");
+    $("#doneMsg").textContent = `Signed on ${j.signedAt}. A copy has been emailed to you.`;
+    show("#done"); window.scrollTo(0, 0);
+  } catch (e) { err(e.message); b.disabled = false; b.textContent = "Sign Document"; }
+};
+
+$("#declineBtn").onclick = () => $("#decBg").classList.remove("hidden");
+$("#decCancel").onclick = () => $("#decBg").classList.add("hidden");
+$("#decConfirm").onclick = async () => {
+  const r = await fetch(`/api/sign/${id}/decline`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: $("#reason").value }) });
+  $("#decBg").classList.add("hidden");
+  if (r.ok) bad("Declined", "Thank you for letting us know. The sender has been informed.");
+};
+
+init().catch(() => bad("Something went wrong", "Please refresh the page or contact the sender."));
+</script>
+</body>
+</html>
