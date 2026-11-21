@@ -57,12 +57,17 @@
     <!-- Quick offer letter (Toddler's Block format) -->
     <div id="olPanel" class="card hidden" style="margin-bottom:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-        <h2 style="margin:0">Offer letter – Toddler's Block</h2>
+        <h2 style="margin:0">Offer letter</h2>
         <button class="btn sm ghost" id="olClose" type="button">Close</button>
       </div>
-      <p class="muted small">Fill in what's different for this person. The letter is made in your usual format, signed by the chosen signatory, and sent for signature.</p>
+      <p class="muted small">Fill in what's different for this person. The letter is made in your usual format on the right letterhead, signed by the chosen signatory, and sent for signature.</p>
       <form id="olForm">
         <div class="grid">
+          <div class="full"><label>Company *</label>
+            <div class="choice" id="olCo">
+              <label><input type="radio" name="co" value="tb" checked> <span><b>Toddler's Block</b><br><span class="small muted">Signed as Managing Partner</span></span></label>
+              <label><input type="radio" name="co" value="wis"> <span><b>Woodford International School</b><br><span class="small muted">Signed as Founder Trustee</span></span></label>
+            </div></div>
           <div><label>Title *</label><select name="title"><option>Ms.</option><option>Mrs.</option><option>Mr.</option><option>Dr.</option></select></div>
           <div><label>Full name *</label><input name="name" required placeholder="e.g. Anuja Godbole"></div>
           <div><label>Email *</label><input name="email" type="email" required placeholder="name@example.com"></div>
@@ -388,7 +393,11 @@ $("#offerForm").onsubmit = async (e) => {
 };
 
 
-// ---- Quick offer letter (Toddler's Block format) ----
+// ---- Quick offer letter (Toddler's Block / Woodford formats) ----
+const OL_CO = {
+  tb:  { company: "Toddler's Block", file: "/templates/offer-toddlers-block.docx", designation: "Managing Partner" },
+  wis: { company: "Woodford International School", file: "/templates/offer-woodford.docx", designation: "Founder Trustee" },
+};
 import * as pdfjsLib from "/vendor/pdf.min.mjs";
 const OL = { docx: null, pdf: null, me: null, signer: null, pages: [], placing: "me", vals: null };
 const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -426,12 +435,12 @@ function olValues() {
       SALARY: Math.round(sal).toLocaleString("en-IN"),
       JOIN_DAY: String(j.getDate()), JOIN_SUF: suffix(j.getDate()), JOIN_MONTHYEAR: j.toLocaleDateString("en-GB", { month: "long", year: "numeric" }),
     },
-    signer: f.signer.value, message: f.message.value.trim(),
+    signer: f.signer.value, message: f.message.value.trim(), co: OL_CO[f.co.value] || OL_CO.tb,
   };
 }
 
-async function olBuildDocx(tokens) {
-  const tpl = await (await fetch("/templates/offer-toddlers-block.docx", { cache: "no-store" })).arrayBuffer();
+async function olBuildDocx(tokens, file) {
+  const tpl = await (await fetch(file, { cache: "no-store" })).arrayBuffer();
   const zip = await JSZip.loadAsync(tpl);
   let xml = await zip.file("word/document.xml").async("string");
   for (const [k, v] of Object.entries(tokens)) xml = xml.split(`{{${k}}}`).join(xmlEsc(v));
@@ -472,7 +481,7 @@ $("#olForm").onsubmit = async (e) => {
   try {
     OL.vals = olValues();
     btn.disabled = true; btn.textContent = "Preparing…";
-    OL.docx = await olBuildDocx(OL.vals.tokens);
+    OL.docx = await olBuildDocx(OL.vals.tokens, OL.vals.co.file);
     const fname = `Offer Letter - ${OL.vals.title} ${OL.vals.name}`;
     $("#olReady").classList.remove("hidden");
     $("#olPages").innerHTML = '<p class="muted">Making the PDF…</p>';
@@ -493,7 +502,7 @@ $("#olForm").onsubmit = async (e) => {
     });
     olMarkers();
     OL.pages[OL.me.page].scrollIntoView({ block: "center", behavior: "smooth" });
-    $("#olInfo").textContent = `Check the letter for ${OL.vals.title} ${OL.vals.name}. Signatures are already placed.`;
+    $("#olInfo").textContent = `Check the ${OL.vals.co.company} letter for ${OL.vals.title} ${OL.vals.name}. Signatures are already placed.`;
     $("#olSend").textContent = `Send to ${OL.vals.email}`;
   } catch (err) { $("#olErr").textContent = err.message; $("#olReady").classList.add("hidden"); }
   btn.disabled = false; btn.textContent = "Prepare letter";
@@ -509,14 +518,14 @@ $("#olSend").onclick = async () => {
   if (!OL.pdf) return;
   const v = OL.vals, btn = $("#olSend"); $("#olSendErr").textContent = "";
   const fd = new FormData();
-  fd.set("company", "Toddler's Block");
+  fd.set("company", v.co.company);
   fd.set("role", `Offer Letter – ${v.position}`);
   fd.set("candidateName", `${v.title} ${v.name}`);
   fd.set("candidateEmail", v.email);
   fd.set("message", v.message || `Please read your offer letter for the position of ${v.position} and sign it online to accept.`);
   fd.set("pdf", OL.pdf);
   fd.set("sigPage", OL.signer.page); fd.set("sigX", OL.signer.x.toFixed(4)); fd.set("sigY", OL.signer.y.toFixed(4));
-  fd.set("senderMode", "before"); fd.set("senderSigId", v.signer);
+  fd.set("senderMode", "before"); fd.set("senderSigId", v.signer); fd.set("senderDesignation", v.co.designation);
   fd.set("sPage", OL.me.page); fd.set("sX", OL.me.x.toFixed(4)); fd.set("sY", OL.me.y.toFixed(4));
   btn.disabled = true; btn.textContent = "Sending…";
   try {
