@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Inkpact – Admin</title>
 <link rel="stylesheet" href="/style.css">
+<script src="/vendor/jszip.min.js"></script>
 </head>
 <body>
 
@@ -24,8 +25,9 @@
 <div id="app" class="hidden">
   <div class="top">
     <div class="brand">Ink<span>pact</span></div>
-    <div style="display:flex;gap:8px">
-      <button class="btn sm" id="newBtn" style="background:#fff;color:var(--ink)">+ New document</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <button class="btn sm" id="olBtn" style="background:#fff;color:var(--ink)">+ Offer letter</button>
+      <button class="btn sm lite" id="newBtn">+ Other document</button>
       <button class="btn sm lite" id="sigsBtn">My signatures</button>
       <button class="btn sm lite" id="logout">Log out</button>
     </div>
@@ -49,6 +51,47 @@
         </div>
         <button class="btn" id="msSave" style="margin-top:12px">Save signature</button>
         <div class="err" id="msErr"></div>
+      </div>
+    </div>
+
+    <!-- Quick offer letter (Toddler's Block format) -->
+    <div id="olPanel" class="card hidden" style="margin-bottom:20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <h2 style="margin:0">Offer letter – Toddler's Block</h2>
+        <button class="btn sm ghost" id="olClose" type="button">Close</button>
+      </div>
+      <p class="muted small">Fill in what's different for this person. The letter is made in your usual format, signed by the chosen signatory, and sent for signature.</p>
+      <form id="olForm">
+        <div class="grid">
+          <div><label>Title *</label><select name="title"><option>Ms.</option><option>Mrs.</option><option>Mr.</option><option>Dr.</option></select></div>
+          <div><label>Full name *</label><input name="name" required placeholder="e.g. Anuja Godbole"></div>
+          <div><label>Email *</label><input name="email" type="email" required placeholder="name@example.com"></div>
+          <div><label>Position *</label><input name="position" list="olPositions" required placeholder="e.g. Early Childhood Educator"></div>
+          <div><label>Date of joining *</label><input name="join" type="date" required></div>
+          <div><label>Fixed salary per month (₹) *</label><input name="salary" inputmode="numeric" required placeholder="e.g. 30000"></div>
+          <div><label>Working hours *</label><input name="hours" list="olHours" required value="8:00 a.m to 2 p.m"></div>
+          <div><label>Working days *</label><input name="days" list="olDays" required value="Monday to Saturday"></div>
+          <div><label>Letter date *</label><input name="date" type="date" required></div>
+          <div><label>Signed by *</label><select name="signer" id="olSigner"></select><div class="small muted" id="olNoSig"></div></div>
+          <div class="full"><label>Note in the email (optional)</label><textarea name="message" placeholder="Shown in the email above the Sign button"></textarea></div>
+        </div>
+        <datalist id="olPositions"><option>Early Childhood Educator</option><option>Admin &amp; Admissions Manager</option><option>Assistant Teacher</option><option>Class Assistant</option><option>Centre Head</option><option>Admissions Counsellor</option></datalist>
+        <datalist id="olHours"><option>8:00 a.m to 2 p.m</option><option>10:00 a.m to 7 p.m</option><option>9:00 a.m to 3 p.m</option><option>8:00 a.m to 5 p.m</option></datalist>
+        <datalist id="olDays"><option>Monday to Saturday</option><option>Monday to Friday</option></datalist>
+        <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+          <button class="btn" id="olMake">Prepare letter</button>
+        </div>
+        <div class="err" id="olErr"></div>
+      </form>
+      <div id="olReady" class="hidden" style="margin-top:18px">
+        <div class="small muted" id="olInfo"></div>
+        <div class="pages" id="olPages"></div>
+        <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;align-items:center">
+          <button class="btn" id="olSend" type="button">Send for signature</button>
+          <button class="btn ghost" id="olWord" type="button">Download Word</button>
+          <span class="small muted">Tap the letter to move a signature: first the signatory's, then the candidate's.</span>
+        </div>
+        <div class="err" id="olSendErr"></div>
       </div>
     </div>
 
@@ -342,6 +385,147 @@ $("#offerForm").onsubmit = async (e) => {
     $("#cancelNew").click(); load();
   } catch (err) { $("#formErr").textContent = err.message; }
   btn.disabled = false; btn.textContent = "Send for signature";
+};
+
+
+// ---- Quick offer letter (Toddler's Block format) ----
+import * as pdfjsLib from "/vendor/pdf.min.mjs";
+const OL = { docx: null, pdf: null, me: null, signer: null, pages: [], placing: "me", vals: null };
+const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const xmlEsc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const suffix = (d) => (d % 100 >= 11 && d % 100 <= 13) ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[d % 10] || "th");
+const titleCase = (s) => s.trim().replace(/\s+/g, " ").replace(/\b([a-z])/g, (m) => m.toUpperCase());
+
+function olOpen() {
+  $("#olPanel").classList.remove("hidden");
+  const f = $("#olForm");
+  if (!f.date.value) f.date.value = today();
+  if (!f.join.value) { const d = new Date(); d.setMonth(d.getMonth() + 1, 1); f.join.value = d.toISOString().slice(0, 10); }
+  $("#olSigner").innerHTML = mySigs.map((g) => `<option value="${g.id}" ${/aditi/i.test(g.name) ? "selected" : ""}>${esc(g.name)}${g.designation ? " – " + esc(g.designation) : ""}</option>`).join("");
+  $("#olNoSig").innerHTML = mySigs.length ? "" : 'Add Aditi\'s signature first: tap <b>My signatures</b> at the top.';
+  $("#olPanel").scrollIntoView({ behavior: "smooth" });
+}
+$("#olBtn").onclick = olOpen;
+$("#olClose").onclick = () => { $("#olPanel").classList.add("hidden"); $("#olReady").classList.add("hidden"); };
+$("#olForm").addEventListener("input", () => { if (!$("#olReady").classList.contains("hidden")) { $("#olReady").classList.add("hidden"); $("#olInfo").textContent = ""; } });
+
+function olValues() {
+  const f = $("#olForm");
+  const name = titleCase(f.name.value), j = new Date(f.join.value + "T12:00:00"), d = new Date(f.date.value + "T12:00:00");
+  const sal = Number(String(f.salary.value).replace(/[^\d.]/g, ""));
+  if (name.length < 3) throw new Error("Please enter the full name");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.value.trim())) throw new Error("The email looks wrong");
+  if (!sal) throw new Error("Please enter the monthly salary");
+  if (!f.signer.value) throw new Error("Choose who signs the letter (add Aditi's signature in My signatures)");
+  return {
+    name, email: f.email.value.trim().toLowerCase(), title: f.title.value, position: f.position.value.trim().replace(/\s+/g, " "),
+    tokens: {
+      DATE: d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+      SALUTATION: `${f.title.value} ${name}`, FULLNAME: name, EMAIL: f.email.value.trim().toLowerCase(),
+      POSITION: f.position.value.trim().replace(/\s+/g, " "), HOURS: f.hours.value.trim().replace(/\.$/, ""), DAYS: f.days.value.trim(),
+      SALARY: Math.round(sal).toLocaleString("en-IN"),
+      JOIN_DAY: String(j.getDate()), JOIN_SUF: suffix(j.getDate()), JOIN_MONTHYEAR: j.toLocaleDateString("en-GB", { month: "long", year: "numeric" }),
+    },
+    signer: f.signer.value, message: f.message.value.trim(),
+  };
+}
+
+async function olBuildDocx(tokens) {
+  const tpl = await (await fetch("/templates/offer-toddlers-block.docx", { cache: "no-store" })).arrayBuffer();
+  const zip = await JSZip.loadAsync(tpl);
+  let xml = await zip.file("word/document.xml").async("string");
+  for (const [k, v] of Object.entries(tokens)) xml = xml.split(`{{${k}}}`).join(xmlEsc(v));
+  if (/\{\{[A-Z_]+\}\}/.test(xml)) throw new Error("Template field left empty");
+  zip.file("word/document.xml", xml);
+  return await zip.generateAsync({ type: "blob", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+}
+
+// Find where the signatures go: the signatory beside "Yours Sincerely … <name>", the candidate above "Signature" at the end.
+async function olSpots(bytes) {
+  const doc = await pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+  let me = null, cand = null;
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page = await doc.getPage(p), vp = page.getViewport({ scale: 1 });
+    const items = (await page.getTextContent()).items.filter((i) => i.str.trim());
+    const top = (i) => 1 - (i.transform[5] + (i.height || 10)) / vp.height, bot = (i) => 1 - i.transform[5] / vp.height;
+    const boxH = (0.29 * 0.42) / (vp.height / vp.width);
+    const ys = items.find((i) => /yours\s+sincerely/i.test(i.str));
+    if (ys) me = { page: p - 1, x: 0.5, y: Math.max(0.02, top(ys) - 0.01) };
+    const und = items.filter((i) => /_{6,}/.test(i.str)).pop();
+    const sigWord = items.filter((i) => /^\s*signature\s*$/i.test(i.str)).pop();
+    if (und || sigWord) { const ref = und || sigWord; cand = { page: p - 1, x: 0.5, y: Math.max(0.02, top(ref) - 0.025) }; }
+  }
+  const last = doc.numPages - 1;
+  return { me: me || { page: last, x: 0.08, y: 0.7 }, cand: cand || { page: last, x: 0.55, y: 0.8 } };
+}
+
+function olMarkers() {
+  OL.pages.forEach((p) => p.querySelectorAll(".marker").forEach((m) => m.remove()));
+  const sg = mySigs.find((g) => g.id === OL.vals?.signer);
+  if (OL.me && OL.pages[OL.me.page]) placeMarker(OL.pages[OL.me.page], OL.me.x, OL.me.y, `${sg ? sg.name : "Signatory"} signs here`, "me", "me");
+  if (OL.signer && OL.pages[OL.signer.page]) placeMarker(OL.pages[OL.signer.page], OL.signer.x, OL.signer.y, `${OL.vals?.name || "Candidate"} signs here`, "", "signer");
+}
+
+$("#olForm").onsubmit = async (e) => {
+  e.preventDefault(); $("#olErr").textContent = ""; $("#olSendErr").textContent = "";
+  const btn = $("#olMake");
+  try {
+    OL.vals = olValues();
+    btn.disabled = true; btn.textContent = "Preparing…";
+    OL.docx = await olBuildDocx(OL.vals.tokens);
+    const fname = `Offer Letter - ${OL.vals.title} ${OL.vals.name}`;
+    $("#olReady").classList.remove("hidden");
+    $("#olPages").innerHTML = '<p class="muted">Making the PDF…</p>';
+    const pdfBytes = await wordToPdf(new File([OL.docx], fname + ".docx", { type: OL.docx.type }));
+    OL.pdf = new File([pdfBytes], fname + ".pdf", { type: "application/pdf" });
+    const spots = await olSpots(new Uint8Array(pdfBytes.slice(0)));
+    OL.me = spots.me; OL.signer = spots.cand; OL.placing = "me";
+    OL.pages = await renderPdf(new Uint8Array(pdfBytes.slice(0)), $("#olPages"));
+    OL.pages.forEach((wrap, i) => {
+      wrap.classList.add("pick");
+      wrap.onclick = (ev) => {
+        const r = wrap.getBoundingClientRect();
+        let x = (ev.clientX - r.left) / r.width - BOX_W / 2, y = (ev.clientY - r.top) / r.height - 0.03;
+        x = Math.min(Math.max(x, 0.02), 0.98 - BOX_W); y = Math.min(Math.max(y, 0.02), 0.9);
+        if (OL.placing === "me") { OL.me = { page: i, x, y }; OL.placing = "signer"; } else { OL.signer = { page: i, x, y }; OL.placing = "me"; }
+        olMarkers();
+      };
+    });
+    olMarkers();
+    OL.pages[OL.me.page].scrollIntoView({ block: "center", behavior: "smooth" });
+    $("#olInfo").textContent = `Check the letter for ${OL.vals.title} ${OL.vals.name}. Signatures are already placed.`;
+    $("#olSend").textContent = `Send to ${OL.vals.email}`;
+  } catch (err) { $("#olErr").textContent = err.message; $("#olReady").classList.add("hidden"); }
+  btn.disabled = false; btn.textContent = "Prepare letter";
+};
+
+$("#olWord").onclick = () => {
+  if (!OL.docx) return;
+  const url = URL.createObjectURL(OL.docx), a = document.createElement("a");
+  a.href = url; a.download = `Offer Letter - ${OL.vals.title} ${OL.vals.name}.docx`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+};
+
+$("#olSend").onclick = async () => {
+  if (!OL.pdf) return;
+  const v = OL.vals, btn = $("#olSend"); $("#olSendErr").textContent = "";
+  const fd = new FormData();
+  fd.set("company", "Toddler's Block");
+  fd.set("role", `Offer Letter – ${v.position}`);
+  fd.set("candidateName", `${v.title} ${v.name}`);
+  fd.set("candidateEmail", v.email);
+  fd.set("message", v.message || `Please read your offer letter for the position of ${v.position} and sign it online to accept.`);
+  fd.set("pdf", OL.pdf);
+  fd.set("sigPage", OL.signer.page); fd.set("sigX", OL.signer.x.toFixed(4)); fd.set("sigY", OL.signer.y.toFixed(4));
+  fd.set("senderMode", "before"); fd.set("senderSigId", v.signer);
+  fd.set("sPage", OL.me.page); fd.set("sX", OL.me.x.toFixed(4)); fd.set("sY", OL.me.y.toFixed(4));
+  btn.disabled = true; btn.textContent = "Sending…";
+  try {
+    await api("/offers", { method: "POST", body: fd });
+    toast(`Offer letter sent to ${v.title} ${v.name}`);
+    $("#olForm").reset(); $("#olReady").classList.add("hidden"); $("#olPanel").classList.add("hidden");
+    OL.pdf = OL.docx = null; load();
+  } catch (err) { $("#olSendErr").textContent = err.message; btn.textContent = `Send to ${v.email}`; }
+  btn.disabled = false;
 };
 
 KEY ? showApp() : showLogin();
